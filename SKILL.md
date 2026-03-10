@@ -1,6 +1,6 @@
 ---
 name: coding-assistant
-description: "Orchestrates Gemini, Codex, and OpenCode as coding assistants. Use proactively — don't wait for the user to ask. Reach for this when: you need a second opinion on complex code/architecture, you can parallelize independent subtasks, you want code review or critique, or you're analyzing an unfamiliar codebase. Also use when the user explicitly mentions Gemini, Codex, OpenCode, codex exec, gemini exec, opencode run, codex resume, gemini resume, 'get a second opinion', 'review this', 'refactor', or asks for help that benefits from parallel AI agents."
+description: "Orchestrates Gemini, Codex, and OpenCode as external coding agents for tasks that exceed Claude's solo capabilities. Trigger when: (1) the user explicitly asks for Gemini, Codex, OpenCode, or says 'use codex', 'ask gemini', 'get a second opinion from another model', 'codex exec', 'gemini -p', 'opencode run', 'codex resume', 'gemini resume'; (2) complex security audits heading to production — JWT, auth, payment processing, crypto; (3) concurrency / event-loop / race-condition correctness analysis; (4) large-scale refactoring across 10+ files that benefits from a dedicated planning agent. Do NOT trigger for routine code reviews, simple refactors, debugging, writing tests, or medium-complexity tasks — Claude handles those directly without external agents."
 ---
 
 # Coding Assistant
@@ -9,28 +9,41 @@ Orchestrates Gemini CLI, Codex CLI, and OpenCode CLI as external coding agents. 
 
 ## Agent Selection
 
+**Default to Codex** for everything unless there's a specific reason not to. Codex self-verifies, catches correctness bugs, and handles multi-file edits reliably. Gemini is a secondary tool with a narrow scope — use it only in the specific cases listed below.
+
 | Task | Agent | Why |
 |------|-------|-----|
-| Quick review / analysis | **Gemini Flash** | ~18s, `@` file refs, zero tool overhead |
-| Deep structural analysis | **Gemini Pro** | Finds patterns others miss |
-| Safety-critical review | **Codex medium** | Catches subtle correctness bugs |
-| Single-file implementation | **Gemini Pro** or **Codex medium** | Pro: faster (~28-41s with --yolo, self-verifies via py_compile). Codex: more thorough self-testing |
-| Multi-file refactoring | **Gemini Pro** | 10/10 on 8-file benchmark (Feb 2026). Most thorough, ~7 min |
-| Multi-file implementation | **Codex medium** | Fast multi-file edits (~4 min). 9/10 on benchmark |
-| Batch file scanning | **Gemini Flash** | Lowest cost per file |
+| Analysis / code review | **Codex medium** | Catches subtle correctness bugs, structured JSONL output |
+| Security-critical review | **Codex high** | Higher reasoning for security/crypto/auth audits |
+| Concurrency / race conditions | **Codex high** | Excels at dict mutation, deadlock, TOCTOU bugs |
+| Refactoring planning (10+ files) | **Codex high** read-only | Thorough dependency analysis, catches hidden coupling |
+| Single-file implementation | **Codex medium** | Self-tests (py_compile + import), fixes own regressions |
+| Multi-file implementation | **Codex medium** | Fast multi-file edits with self-verification |
 | Free/budget coding task | **OpenCode MiniMax** | 7/10 on benchmark, $0.00. Best free option |
-| Second opinion / debate | **Both in parallel** | Different models catch different bugs |
+| Second opinion (parallel) | **Codex + Gemini** | Different models catch different bugs |
+
+### When to use Gemini (limited scope)
+
+Gemini is useful in exactly these situations — don't reach for it otherwise:
+
+- **User explicitly asks for Gemini** — "use gemini", "ask gemini", "gemini -p"
+- **Batch scanning many files cheaply** — Gemini Flash + `@./path` refs for quick sweeps across 20+ files where you just need surface-level findings, not deep analysis
+- **Second opinion alongside Codex** — run Gemini Flash in parallel when you already have Codex running and want a different model's perspective
+
+Gemini's limitations: line references off by ~15-20 lines, cuts corners on edits (Flash hardcodes subclass identity, skips persistence), Pro can timeout on large tasks, neither model self-tests reliably. Always verify Gemini's output.
 
 ### Model Tiers
 
-| Tier | Gemini | Codex |
-|------|--------|-------|
-| Fast | `gemini-3-flash-preview` (~18s) | `gpt-5.3-codex` effort=medium (~30s) |
-| Smart | `gemini-3.1-pro-preview` (~15-25s) | `gpt-5.3-codex` effort=high (~35s) |
+| Tier | Codex | Gemini (limited use) |
+|------|-------|----------------------|
+| Default | `gpt-5.4` effort=medium | — |
+| High stakes | `gpt-5.4` effort=high | — |
+| Critical / complex | `gpt-5.4` effort=xhigh | — |
+| Cheap batch scan | — | `gemini-3-flash-preview` |
+| User-requested | — | `gemini-3.1-pro-preview` |
 
-- **Gemini Pro for edits**: works with `--yolo` for single-file refactoring (~28-41s). Runs py_compile when asked. NOT recommended for multi-file (untested, use Codex).
-- **Codex high vs medium**: marginal quality gain for ~25% more time. Default to medium.
-- **Reasoning effort** (Codex): ask user unless already specified.
+- **Codex reasoning effort**: medium for routine tasks, high for security/concurrency/large refactoring, xhigh for critical or highly complex tasks.
+- **Codex xhigh**: meaningfully stronger than high but slower. Use when correctness matters most.
 
 ### OpenCode (Chinese/Free Models via Zen API)
 
@@ -38,61 +51,33 @@ Orchestrates Gemini CLI, Codex CLI, and OpenCode CLI as external coding agents. 
 
 **DO NOT use OpenCode for Claude, GPT, or Gemini models** — their dedicated CLIs are 2-3x faster and produce higher quality output. OpenCode adds ~13K tokens of system prompt overhead and routes through an extra API layer.
 
-| Model | Quality | Cost | Time | Notes |
-|-------|---------|------|------|-------|
-| `opencode/minimax-m2.5-free` | 7/10 | $0.00 | ~7 min | **Best free model.** Reliable agentic tool use. Nails core edits, may skip examples/tests |
-| `opencode/kimi-k2.5` | 6.5/10 | ~$0.50 | ~6 min | Thorough (90 tool calls) but misses type hints. Overspends for quality |
-| `opencode/trinity-large-preview-free` | 5.5/10 | $0.00 | ~4 min | Makes edits but leaves gaps. Can introduce bugs |
+| Model | Cost | Time | Notes |
+|-------|------|------|-------|
+| `opencode/minimax-m2.5-free` | $0.00 | ~7 min | **Best free model.** Reliable agentic tool use. Nails core edits, may skip examples/tests |
+| `opencode/kimi-k2.5` | ~$0.50 | ~6 min | Thorough (90 tool calls) but misses type hints. Overspends for quality |
+| `opencode/trinity-large-preview-free` | $0.00 | ~4 min | Makes edits but leaves gaps. Can introduce bugs |
 
 Other available models (untested for coding): `opencode/minimax-m2.5`, `opencode/kimi-k2`, `opencode/kimi-k2-thinking`, `opencode/glm-4.6`, `opencode/glm-4.7`, `opencode/glm-5`, `opencode/big-pickle`
 
 
 ## Command Templates
 
-### Gemini — analysis
+### Codex — analysis (default)
 
 ```bash
-cd <project-dir> && gemini -m gemini-3-flash-preview -o json \
-  -p "Review @./path/to/file.py for <focus-area>" \
-  2>/dev/null | tee /tmp/gemini-<name>.log
-```
-
-Parse: `jq -r '.response'` | Resume ID: `jq -r '.session_id'`
-
-### Gemini — implementation (Flash)
-
-```bash
-cd <project-dir> && gemini -m gemini-3-flash-preview --yolo -o json \
-  -p "Apply this change to @./file.py: <instructions>. After editing, run python -m py_compile file.py to verify." \
-  2>/dev/null | tee /tmp/gemini-<name>.log
-```
-
-### Gemini — implementation (Pro, single-file)
-
-```bash
-cd <project-dir> && gemini -m gemini-3.1-pro-preview --yolo -o json \
-  -p "Refactor @./file.py: <instructions>. Apply ALL changes. After editing, run python -m py_compile file.py to verify." \
-  2>/dev/null | tee /tmp/gemini-<name>.log
-```
-
-**Always verify Gemini's edits** — Flash cuts corners more than Pro. Pro runs py_compile when asked, Flash may skip it.
-
-### Codex — analysis
-
-```bash
-cd <project-dir> && codex exec -m gpt-5.3-codex --skip-git-repo-check \
+cd <project-dir> && codex exec --json -m gpt-5.4 --skip-git-repo-check \
   -c model_reasoning_effort="medium" \
-  -s read-only --full-auto "Review src/file.py for <focus-area>" \
-  2>/dev/null | tee /tmp/codex-<name>.log
+  -s danger-full-access --full-auto "Review src/file.py for <focus-area>" \
+  2>/dev/null | tee /tmp/codex-<name>.jsonl
 ```
 
 ### Codex — implementation
 
 ```bash
-cd <project-dir> && codex exec -m gpt-5.3-codex --skip-git-repo-check \
+cd <project-dir> && codex exec --json -m gpt-5.4 --skip-git-repo-check \
   -c model_reasoning_effort="medium" \
-  -s workspace-write --full-auto "<instructions>" \
-  2>/dev/null | tee /tmp/codex-<name>.log
+  -s danger-full-access --full-auto "<instructions>" \
+  2>/dev/null | tee /tmp/codex-<name>.jsonl
 ```
 
 Codex self-tests (py_compile + import check) and fixes regressions in the same session.
@@ -128,6 +113,18 @@ opencode --dir <project-dir> -m opencode/minimax-m2.5-free
 Launches the full TUI with chat, file browser, and session management. Best for exploratory work and multi-turn conversations. Switch agents and models mid-session.
 
 Parse headless JSON: `jq -r 'select(.type=="text") | .part.text'` for text. Events are JSONL (step_start, tool_use, text, step_finish). **IMPORTANT**: The text field is nested under `.part.text`, NOT `.content` — using `.content` silently returns null.
+
+### Gemini — batch scan (secondary, limited use)
+
+```bash
+cd <project-dir> && gemini -m gemini-3-flash-preview -o json \
+  -p "Review @./path/to/file.py for <focus-area>" \
+  2>/dev/null | tee /tmp/gemini-<name>.log
+```
+
+Parse: `jq -r '.response'` | Resume ID: `jq -r '.session_id'`
+
+Only use for cheap batch scans across many files or when the user explicitly asks for Gemini. For anything requiring depth or correctness, use Codex instead. **Always verify Gemini's output** — line references off by ~15-20 lines, Flash cuts corners on edits.
 
 ## Resume Sessions
 
@@ -170,11 +167,11 @@ After completion, inform the user they can resume with `codex resume`, `gemini -
 - "Show a concrete code sketch" — tests understanding
 - Specify which refactoring to apply — neither implements its top finding by default
 
-### Gemini-specific
-- Use `@./path` file refs — zero tool overhead, fastest mode
-- Don't ask it to self-test — it won't. Verify yourself.
-- For edits: "Apply ALL changes. After editing, run `python -m py_compile <file>`."
-- Line references can be off by ~15-20 lines
+### Gemini-specific (batch scans / user-requested only)
+- Use `@./path` file refs — zero tool overhead, fastest mode for batch scanning
+- Don't ask it to self-test — it won't. Always verify output yourself.
+- Line references can be off by ~15-20 lines — don't trust for precise citations
+- For any task requiring correctness or depth, use Codex instead
 
 ### Codex-specific
 - Don't paste file contents — it reads via sandbox tools. Just point to the path.
@@ -189,37 +186,37 @@ After completion, inform the user they can resume with `codex resume`, `gemini -
 
 ## Parallel Patterns
 
-### Both agents, same file (second opinion)
+### Second opinion (Codex primary + Gemini secondary)
 
-Launch as parallel background Bash tasks:
+Launch as parallel background Bash tasks — Codex is the primary analysis, Gemini Flash is a cheap secondary check:
 
 ```bash
-# Gemini
+# Codex (primary)
+cd <dir> && codex exec --json -m gpt-5.4 --skip-git-repo-check \
+  -c model_reasoning_effort="medium" \
+  -s danger-full-access --full-auto "Review file.py — top 3 issues" \
+  2>/dev/null | tee /tmp/codex-review.jsonl
+
+# Gemini Flash (secondary, cheap second opinion)
 cd <dir> && gemini -m gemini-3-flash-preview -o json \
   -p "Review @./file.py — top 3 issues" \
   2>/dev/null | tee /tmp/gemini-review.log
-
-# Codex
-cd <dir> && codex exec -m gpt-5.3-codex --skip-git-repo-check \
-  -c model_reasoning_effort="medium" \
-  -s read-only --full-auto "Review file.py — top 3 issues" \
-  2>/dev/null | tee /tmp/codex-review.log
 ```
 
-After both complete: read, compare, synthesize. Different models catch different bugs.
+After both complete: read, compare, synthesize. Trust Codex findings over Gemini when they conflict.
 
-### Different files, one agent each
+### Multiple files in parallel
 
 ```bash
-gemini ... -p "Review @./src/auth.py" ... | tee /tmp/gemini-auth.log
-codex ... "Review src/api.py" ... | tee /tmp/codex-api.log
+codex ... "Review src/auth.py" ... | tee /tmp/codex-auth.jsonl
+codex ... "Review src/api.py" ... | tee /tmp/codex-api.jsonl
 ```
 
 ## Operational Defaults
 
 - **Stderr**: always `2>/dev/null`. Remove for debugging.
 - **Stdout**: always `tee` to `/tmp/{gemini,codex,opencode}-*.log`. Claude Code temp files get garbage-collected.
-- **Sandbox**: Codex `read-only` for analysis, `workspace-write` for edits. Gemini: `--yolo` for edits (auto-sandboxes). OpenCode: `build` agent has full access by default.
+- **Sandbox**: Codex always `danger-full-access` (enables native web search via Responses API; `--search` flag only works in interactive mode, not `codex exec`). Gemini: `--yolo` for edits (auto-sandboxes). OpenCode: `build` agent has full access by default.
 - **Git check**: always `--skip-git-repo-check` for Codex.
 - **OpenCode overhead**: adds ~13K tokens system prompt + extra API hop. Expect 2-3x slower than direct CLIs. Only use for models without dedicated CLIs.
 
@@ -233,12 +230,12 @@ All agents are **colleagues, not authorities**. Trust your own knowledge when co
 
 ## After Every Command
 
-Use `AskUserQuestion` to confirm next steps, collect clarifications, or decide whether to resume.
+Confirm next steps with the user before proceeding — collect clarifications or decide whether to resume.
 
 ## Error Handling
 
 - Stop and report on non-zero exit codes; ask before retrying.
-- Ask permission before high-impact flags (`--full-auto`, `--yolo`, `danger-full-access`) unless already given.
+- Ask permission before high-impact flags (`--full-auto`, `--yolo`) unless already given.
 - Summarize warnings or partial results and ask how to adjust.
 
 ## CLI Details
